@@ -1,7 +1,6 @@
 const {
   Client,
   GatewayIntentBits,
-  EmbedBuilder,
   ButtonBuilder,
   ActionRowBuilder
 } = require('discord.js')
@@ -27,29 +26,117 @@ const client = new Client({
   ]
 })
 
+class MusicPlayer {
+  queue = []
+  audioPlay = createAudioPlayer()
+  connection = null
+  channel = null
+  config = {}
 
+  constructor(config) {
+    this.config = config
+  }
 
-//-------global---variables----------------
-var queue = []
-var queueposition = 0
-var audioPlay = createAudioPlayer()
-var meta
-var currentChannel
+  setup(voiceConnection, channel) {
+    this.connection = voiceConnection
+    this.connection.subscribe(this.audioPlay)
+    this.channel = channel
 
-var songData = {
-  name: "",
-  id: "",
-  thumbnail: "",
+    this.audioPlay.on(AudioPlayerStatus.Idle, (before) => {
+      console.log('AudioPlayerStatus: Idle')
+
+      if (before === AudioPlayerStatus.Playing) {
+        console.log('no more songs to play!')
+
+        if (!player.empty()) {
+          inter.channel.send('no songs left on the queue!')
+        }
+        const lastSong = player.pop()
+        fs.unlink(`${lastSong.id}.${config.audioFormat}`, (err) => {
+          if (!err) console.log(`deleted, i hope...`)
+          else console.error(err)
+        })
+      }
+      else {
+        player.play()
+      }
+    })
+
+    this.audioPlay.on(AudioPlayerStatus.Playing, () => {
+      console.log(`a song started playing, next ${player.lastSong().name}`)
+    })
+  }
+
+  addSong(songData) {
+    this.queue.push(songData)
+    if (this.audioPlay.state.status == AudioPlayerStatus.Idle) {
+    }
+  }
+  empty() {
+    return this.queue.length > 0
+  }
+  lastSong() {
+    return this.queue.at(-1)
+  }
+  pop() {
+    return this.queue.pop()
+  }
+  pause() {
+    this.audioPlay.pause()
+  }
+  resume() {
+    this.audioPlay.unpause()
+  }
+  sendEmbedForCurrentSong(channel = null) {
+    if (!channel) channel = this.channel
+    if (this.empty()) return
+    channel.send({
+      embeds: [{
+        color: 0x0099ff,
+        title: 'Current song',
+        description: this.lastSong().name,
+        thumbnail:{
+          url: this.lastSong().thumbnail
+        },
+      }],
+    })
+  }
+  destroy() {
+    this.stop()
+    this.connection.destroy()
+    this.queue = []
+  }
+  stop() {
+    this.audioPlay.stop()
+  }
+  skip() {
+    this.audioPlay.stop()
+  }
+  play() {
+    let songData = this.lastSong()
+
+    try {
+      const res = createAudioResource(createReadStream(`${songData.id}.${audioFormat}`))
+      this.audioPlay.play(res)
+      this.audioPlay.on('error', (error) => {
+        console.err(`error on audio play ${error}`)
+      })
+      player.sendEmbedForCurrentSong(this.channel)
+    } catch(error) {
+      console.error("Could not create audio resource: ", error)
+    }
+  }
 }
 
-var res
-var embedContent = new EmbedBuilder()
+//-------global---variables----------------
+const config = {
+  audioFormat: 'opus'
+}
+const player = new MusicPlayer(config)
 
-const audioFormat = 'opus'
 //-----------------------------------------
 
 audioPlay.on("error", (console.error))
-
 
 // When the client is ready, run this code (only once)
 client.once('ready', () => {
@@ -61,16 +148,15 @@ console.log(process.env.TOKEN)
 // Login to Discord with your client's token
 client.login(process.env.TOKEN)
 
+client.on('voiceStateUpdate', (oldState, newState) => {
+  // TODO: we may react better to vc channel change/leave
+  player.destroy()
+})
+
 client.on('interactionCreate', async (inter) => {
-  if(!inter.isCommand){return}
+  if (!inter.isCommand) return
 
-  songData = {
-    name: "",
-    id: "",
-    thumbnail: "",
-  }
-
-  if(inter.commandName == 'bromita'){
+  if (inter.commandName == 'bromita') {
     await inter.reply('ok <:ben2:1000838308575846460>')
     const row = new ActionRowBuilder()
     row.addComponents(
@@ -82,32 +168,24 @@ client.on('interactionCreate', async (inter) => {
     inter.channel.send({
       components: [row]
     })
+    return
   }
 
-  if(inter.commandName == 'leave'){
-    connect.destroy()
+  if (inter.commandName == 'leave') {
     await inter.reply('leaving...')
+    player.destroy()
   }
 
-  if(inter.commandName == 'current' && queue.length != 0){
-
-    embedContent = {
-      color: 0x0099ff,
-      title: 'Current song',
-      description: queue[queueposition-1].name,
-      thumbnail:{
-        url: queue[queueposition-1].thumbnail,
-      },
+  if (inter.commandName == 'current') {
+    if (player.empty()) {
+      inter.reply('no song playing!!')
+      return
     }
-
-    inter.channel.send({
-      embeds: [embedContent],
-    })
+    player.sendEmbedForCurrentSong(inter.channel)
   }
 
-  if(inter.commandName == 'do' && inter.member.voice.channel){
+  if (inter.commandName == 'do' && inter.member.voice.channel) {
     await inter.reply('ya voy tarado !!1!')
-
 
     let metadata = []
     const metadataStream = spawn('yt-dlp', ['-j', inter.options.getString('url')])
@@ -116,15 +194,15 @@ client.on('interactionCreate', async (inter) => {
     })
 
     try {
-      const connect = joinVoiceChannel({
+      const voiceConnection = joinVoiceChannel({
         channelId: inter.channelId,
         guildId: inter.guildId,
         adapterCreator: inter.guild.voiceAdapterCreator,
       })
-
-      connect.subscribe(audioPlay)
+      player.setup(voiceConnection)
     } catch (connectionError) {
       console.error("connection could not be succesfully created")
+      return
     }
 
     metadataStream.stdout.on('data', (data) => {
@@ -132,127 +210,32 @@ client.on('interactionCreate', async (inter) => {
     })
 
     metadataStream.stdout.on('end', () => {
-      const actualData = metadata.toString()
-      meta = JSON.parse(actualData.toString())
-      songData.name = meta.title
-      songData.id = meta.id
-      songData.thumbnail = meta.thumbnail
+      const meta = JSON.parse(metadata.toString())
+      const songData = {
+        id: meta.id,
+        name: meta.title,
+        thumbnail: meta.thumbnail
+      }
 
       const download = spawn('yt-dlp', ['-x', '-o', '%(id)s', inter.options.getString('url')])
       download.on('error', console.error)
-      download.on('close', () => {
-        try {
-          res = createAudioResource(createReadStream(`${songData.id}.${audioFormat}`))
-        } catch(error) {
-          console.error("Could not create audio resource: ", error)
-        }
-
-        queue.push(songData)
-
-        if (audioPlay.state.status == AudioPlayerStatus.Idle && res) {
-          audioPlay.play(res)
-          audioPlay.on('error', (error) => {
-            console.err(`error on audio play ${error}`)
-          })
-
-          if (queue[queueposition]) {
-            sendEmbed(inter.channel, queue[queueposition].name, queue[queueposition].thumbnail)
-          }
-        }
+      download.on('close', async () => {
+        await inter.reply(`${songData.name} añadido a la cola! :V`)
+        player.addSong(songData)
       })
     })
-
   }
 
-  if (inter.commandName == 'skip' && audioPlay) {
-    audioPlay.stop()
-
-    if (queue[queueposition]) {
-      try {
-        audioPlay.play(createAudioResource(createReadStream(`${queue[queueposition].id}.${audioFormat}`)))
-      } catch(error) {
-        console.error(error)
-      }
-
-      await inter.reply('skipping...')
-
-      if (queue[queueposition]) {
-        sendEmbed(inter.channel, queue[queueposition].name, queue[queueposition].thumbnail)
-      }
-    } else {
-      inter.channel.send('no songs left on the queue, stopping the player...')
-      audioPlay.stop()
-      queue = []
-      queueposition = 0
-    }
+  if (inter.commandName == 'skip') {
+    await inter.reply('skipping...')
+    player.stop()
   }
 
-  if(inter.commandName == 'resume'){
-    console.log(queue)
+  if (inter.commandName == 'resume') {
+    player.resume()
   }
 
-})
-
-audioPlay.on(AudioPlayerStatus.Idle, () => {
-  console.log('AudioPlayerStatus: Idle')
-
-  var auxiliarAudioResource
-
-  try {
-    auxiliarAudioResource = createReadStream(`${queue[queueposition].id}.${audioFormat}`)
-  } catch(error) {
-    console.error(error)
-    return
-  }
-
-  auxiliarAudioResource.on('error', (error) => {
-    console.error(`Error loading the audioResource: ${error}`)
-    queue.splice(queueposition, 1)
-    queueposition -= 1
-  })
-
-  if (queue[queueposition] && queue[queueposition - 1]) {
-    audioPlay.play(createAudioResource(auxiliarAudioResource))
-
-    if (queue[queueposition-1].id != queue[queueposition].id) {
-      console.log(queue[queueposition-1].id)
-
-      fs.unlink(`${queue[queueposition].id}.${audioFormat}`, (err) => {
-        if (err) console.error(`Deleted: ${err}`)
-      })
-    }
-
-    sendEmbed(currentChannel, queue[queueposition].name, queue[queueposition].thumbnail)
-  }
-
-  else{
-    console.log('no more songs to play!')
-    if (queue[queueposition-1]) {
-      fs.unlink(`${queue[queueposition].id}.${audioFormat}`, (err) => {
-        if (err) console.log(`deleted, i hope...`)
-      })
-    }
+  if (inter.commandName == 'pause') {
+    player.pause()
   }
 })
-
-audioPlay.on(AudioPlayerStatus.Playing, () => {
-  console.log(`a song started playing, next: ${queueposition}, current: ${queueposition-1}`)
-  queueposition++
-})
-
-function sendEmbed(channelTo, desc, ThumbUrl) {
-  channelTo.send({
-    embeds: [{
-      color: 0x0099ff,
-      title: 'Current song',
-      description: desc,
-      thumbnail:{
-        url: ThumbUrl
-      },
-    }],
-  })
-}
-
-
-
-
