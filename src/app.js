@@ -50,7 +50,7 @@ class MusicPlayer {
 
       if (before.status === AudioPlayerStatus.Playing) {
         this.pop()
-        if (this.empty()) {
+        if (this.queueIsEmpty()) {
           this.channel.send('no songs left on the queue 😭')
           return
         }
@@ -59,7 +59,7 @@ class MusicPlayer {
     })
 
     this.audioPlay.on(AudioPlayerStatus.Playing, () => {
-      console.log(`a song started playing, next ${this.lastSong().name}`)
+      console.log(`a song started playing, next ${this.currentSong().name}`)
     })
 
     this.audioPlay.on('error', (error) => {
@@ -74,10 +74,10 @@ class MusicPlayer {
     }
     this.tryPlay()
   }
-  empty() {
+  queueIsEmpty() {
     return this.queue.length === 0
   }
-  lastSong() {
+  currentSong() {
     return this.queue.at(-1)
   }
   pop() {
@@ -93,14 +93,14 @@ class MusicPlayer {
   }
   sendEmbedForCurrentSong(channel = null) {
     if (!channel) channel = this.channel
-    if (this.empty()) return
+    if (this.queueIsEmpty()) return
     channel.send({
       embeds: [{
         color: 0x0099ff,
         title: 'Current song',
-        description: this.lastSong().name,
+        description: this.currentSong().name,
         thumbnail:{
-          url: this.lastSong().thumbnail
+          url: this.currentSong().thumbnail
         },
       }],
     })
@@ -118,7 +118,7 @@ class MusicPlayer {
     if (this.audioPlay.state.status == AudioPlayerStatus.Playing) {
       return
     }
-    let songData = this.lastSong()
+    let songData = this.currentSong()
     if (!songData) return
 
     try {
@@ -126,33 +126,25 @@ class MusicPlayer {
       this.audioPlay.play(res)
       this.sendEmbedForCurrentSong(this.channel)
     } catch(error) {
-      console.error("Could not create audio resource: ", error)
-      console.log('😭', error)
+      console.error("😭 Could not create audio resource: ", error)
     }
   }
 }
 
-//-------global---variables----------------
 const config = {
   audioFormat: 'opus'
 }
 const player = new MusicPlayer(config)
 
-//-----------------------------------------
-
-// When the client is ready, run this code (only once)
 client.once('ready', () => {
   console.log('Ready!')
 })
-
-console.log(process.env.TOKEN)
 
 // Login to Discord with your client's token
 client.login(process.env.TOKEN)
 
 client.on('voiceStateUpdate', (oldState, newState) => {
   // TODO: we may react better to vc channel change/leave
-  // player.destroy()
 })
 
 client.on('interactionCreate', async (inter) => {
@@ -161,7 +153,7 @@ client.on('interactionCreate', async (inter) => {
     return
   }
 
-  else if (inter.commandName == 'bromita') {
+  if (inter.commandName == 'bromita') {
     await inter.reply('ok <:ben2:1000838308575846460>')
     const row = new ActionRowBuilder()
     row.addComponents(
@@ -180,7 +172,7 @@ client.on('interactionCreate', async (inter) => {
     player.destroy()
   }
   else if (inter.commandName == 'current') {
-    if (player.empty()) {
+    if (player.queueIsEmpty()) {
       await inter.reply('no song playing!!')
       return
     }
@@ -228,7 +220,6 @@ client.on('interactionCreate', async (inter) => {
           })
         }
         else {
-          console.log(`song '${songData.name}' already exists, reusing...`)
           player.addSong(songData)
         }
       }
@@ -237,22 +228,18 @@ client.on('interactionCreate', async (inter) => {
       }
     })
   }
-
   else if (inter.commandName == 'skip') {
     await inter.reply('skipping...')
     player.skip()
   }
-
   else if (inter.commandName == 'resume') {
     player.resume()
     await inter.reply('resuming...')
   }
-
   else if (inter.commandName == 'pause') {
     player.pause()
     await inter.reply('pausing...')
   }
-
   else {
     await inter.reply('no entiendo :(')
   }
