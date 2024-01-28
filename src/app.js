@@ -32,54 +32,58 @@ class MusicPlayer {
   connection = null
   channel = null
   config = {}
+  already_setup = false
 
   constructor(config) {
     this.config = config
   }
 
   setup(voiceConnection, channel) {
+    if (this.already_setup) return
+    this.already_setup = true
     this.connection = voiceConnection
     this.connection.subscribe(this.audioPlay)
     this.channel = channel
 
     this.audioPlay.on(AudioPlayerStatus.Idle, (before) => {
-      console.log('AudioPlayerStatus: Idle')
+      console.log('AudioPlayerStatus: Idle', this.queue)
 
-      if (before === AudioPlayerStatus.Playing) {
-        console.log('no more songs to play!')
-
-        if (!player.empty()) {
-          inter.channel.send('no songs left on the queue!')
+      if (before.status === AudioPlayerStatus.Playing) {
+        this.pop()
+        if (this.empty()) {
+          this.channel.send('no songs left on the queue 😭')
+          return
         }
-        const lastSong = player.pop()
-        fs.unlink(`${lastSong.id}.${config.audioFormat}`, (err) => {
-          if (!err) console.log(`deleted, i hope...`)
-          else console.error(err)
-        })
       }
-      else {
-        player.play()
-      }
+      this.tryPlay()
     })
 
     this.audioPlay.on(AudioPlayerStatus.Playing, () => {
-      console.log(`a song started playing, next ${player.lastSong().name}`)
+      console.log(`a song started playing, next ${this.lastSong().name}`)
+    })
+
+    this.audioPlay.on('error', (error) => {
+      console.error(`error on audio play ${error}`)
     })
   }
 
-  addSong(songData) {
+  async addSong(songData) {
     this.queue.push(songData)
-    if (this.audioPlay.state.status == AudioPlayerStatus.Idle) {
+    if (this.audioPlay.state.status == AudioPlayerStatus.Playing) {
+      await this.channel.send(`\`${songData.name}\` añadido a la cola! :V`)
     }
+    this.tryPlay()
   }
   empty() {
-    return this.queue.length > 0
+    return this.queue.length === 0
   }
   lastSong() {
     return this.queue.at(-1)
   }
   pop() {
-    return this.queue.pop()
+    const to_return = this.queue.pop()
+    console.log('popping...', this.queue)
+    return to_return
   }
   pause() {
     this.audioPlay.pause()
@@ -102,28 +106,28 @@ class MusicPlayer {
     })
   }
   destroy() {
-    this.stop()
     this.connection.destroy()
     this.queue = []
-  }
-  stop() {
-    this.audioPlay.stop()
+    this.audioPlay.removeAllListeners()
+    this.already_setup = false
   }
   skip() {
     this.audioPlay.stop()
   }
-  play() {
+  tryPlay() {
+    if (this.audioPlay.state.status == AudioPlayerStatus.Playing) {
+      return
+    }
     let songData = this.lastSong()
+    if (!songData) return
 
     try {
-      const res = createAudioResource(createReadStream(`${songData.id}.${audioFormat}`))
+      const res = createAudioResource(createReadStream(`${songData.id}.${this.config.audioFormat}`))
       this.audioPlay.play(res)
-      this.audioPlay.on('error', (error) => {
-        console.err(`error on audio play ${error}`)
-      })
-      player.sendEmbedForCurrentSong(this.channel)
+      this.sendEmbedForCurrentSong(this.channel)
     } catch(error) {
       console.error("Could not create audio resource: ", error)
+      console.log('😭', error)
     }
   }
 }
@@ -135,8 +139,6 @@ const config = {
 const player = new MusicPlayer(config)
 
 //-----------------------------------------
-
-audioPlay.on("error", (console.error))
 
 // When the client is ready, run this code (only once)
 client.once('ready', () => {
@@ -150,13 +152,16 @@ client.login(process.env.TOKEN)
 
 client.on('voiceStateUpdate', (oldState, newState) => {
   // TODO: we may react better to vc channel change/leave
-  player.destroy()
+  // player.destroy()
 })
 
 client.on('interactionCreate', async (inter) => {
-  if (!inter.isCommand) return
+  if (!inter.isCommand) {
+    console.log('unkown interaction: ', inter)
+    return
+  }
 
-  if (inter.commandName == 'bromita') {
+  else if (inter.commandName == 'bromita') {
     await inter.reply('ok <:ben2:1000838308575846460>')
     const row = new ActionRowBuilder()
     row.addComponents(
@@ -170,21 +175,18 @@ client.on('interactionCreate', async (inter) => {
     })
     return
   }
-
-  if (inter.commandName == 'leave') {
+  else if (inter.commandName == 'leave') {
     await inter.reply('leaving...')
     player.destroy()
   }
-
-  if (inter.commandName == 'current') {
+  else if (inter.commandName == 'current') {
     if (player.empty()) {
-      inter.reply('no song playing!!')
+      await inter.reply('no song playing!!')
       return
     }
     player.sendEmbedForCurrentSong(inter.channel)
   }
-
-  if (inter.commandName == 'do' && inter.member.voice.channel) {
+  else if (inter.commandName == 'do' && inter.member.voice.channel) {
     await inter.reply('ya voy tarado !!1!')
 
     let metadata = []
@@ -199,7 +201,7 @@ client.on('interactionCreate', async (inter) => {
         guildId: inter.guildId,
         adapterCreator: inter.guild.voiceAdapterCreator,
       })
-      player.setup(voiceConnection)
+      player.setup(voiceConnection, inter.channel)
     } catch (connectionError) {
       console.error("connection could not be succesfully created")
       return
@@ -210,32 +212,48 @@ client.on('interactionCreate', async (inter) => {
     })
 
     metadataStream.stdout.on('end', () => {
-      const meta = JSON.parse(metadata.toString())
-      const songData = {
-        id: meta.id,
-        name: meta.title,
-        thumbnail: meta.thumbnail
-      }
+      try {
+        const meta = JSON.parse(metadata.toString())
+        const songData = {
+          id: meta.id,
+          name: meta.title,
+          thumbnail: meta.thumbnail
+        }
 
-      const download = spawn('yt-dlp', ['-x', '-o', '%(id)s', inter.options.getString('url')])
-      download.on('error', console.error)
-      download.on('close', async () => {
-        await inter.reply(`${songData.name} añadido a la cola! :V`)
-        player.addSong(songData)
-      })
+        if (!fs.existsSync(`${songData.id}.${config.audioFormat}`)) {
+          const download = spawn('yt-dlp', ['-x', '-o', '%(id)s', inter.options.getString('url')])
+          download.on('error', console.error)
+          download.on('close', () => {
+            player.addSong(songData)
+          })
+        }
+        else {
+          console.log(`song '${songData.name}' already exists, reusing...`)
+          player.addSong(songData)
+        }
+      }
+      catch {
+        inter.channel.send('oye, esa huevada de link es inválido!!')
+      }
     })
   }
 
-  if (inter.commandName == 'skip') {
+  else if (inter.commandName == 'skip') {
     await inter.reply('skipping...')
-    player.stop()
+    player.skip()
   }
 
-  if (inter.commandName == 'resume') {
+  else if (inter.commandName == 'resume') {
     player.resume()
+    await inter.reply('resuming...')
   }
 
-  if (inter.commandName == 'pause') {
+  else if (inter.commandName == 'pause') {
     player.pause()
+    await inter.reply('pausing...')
+  }
+
+  else {
+    await inter.reply('no entiendo :(')
   }
 })
