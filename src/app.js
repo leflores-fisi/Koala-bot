@@ -81,8 +81,8 @@ class MusicPlayer {
     return this.queue.at(-1)
   }
   pop() {
-    const to_return = this.queue.pop()
-    console.log('popping...', this.queue)
+    const to_return = this.queue[0]
+    this.queue = this.queue.slice(1)
     return to_return
   }
   pause() {
